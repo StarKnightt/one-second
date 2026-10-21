@@ -1,0 +1,7 @@
+node_modules
+dist
+output/frames
+output/*.wav
+output/segments
+.DS_Store
+output/critic/v*.png

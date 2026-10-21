@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>One Second</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #071022; color: #dfe7f3; font-family: Inter, system-ui, sans-serif; }
+      body { display: grid; place-items: center; }
+      canvas { width: min(100vw, calc(100vh * 16 / 9)); height: auto; display: block; }
+      #ui { position: fixed; left: 16px; right: 16px; bottom: 12px; display: flex; gap: 12px; align-items: center; font: 13px 'JetBrains Mono', monospace; }
+      #ui input { flex: 1; accent-color: #ff8a3d; }
+      #ui button { background: none; color: inherit; border: 1px solid #3a4a66; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+      body.render #ui { display: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="1920" height="1080"></canvas>
+    <div id="ui"><button id="play">play</button><input id="scrub" type="range" min="0" max="2399" value="0" /><span id="tc">0.00s</span></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
