@@ -108,9 +108,11 @@ export class Phone {
 
   private drawChat(t: number) {
     const g = this.g;
-    const bg = g.createLinearGradient(0, 0, 0, CH);
-    bg.addColorStop(0, '#0d1018');
-    bg.addColorStop(1, '#090b11');
+    // a softly lit chat wallpaper, so the screen glows in the dark room
+    const bg = g.createLinearGradient(0, 0, CW, CH);
+    bg.addColorStop(0, '#24345e');
+    bg.addColorStop(0.55, '#1a2547');
+    bg.addColorStop(1, '#2a1f4a');
     g.fillStyle = bg;
     g.fillRect(0, 0, CW, CH);
     this.statusBar();

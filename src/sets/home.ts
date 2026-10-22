@@ -35,8 +35,11 @@ function fbm(x: number, y: number) {
 export function seabedY(x: number, z: number) {
   const shelf = lerp(-5, -34, smooth(ramp(-z, 470, 640)));
   const dunes = 2.2 * Math.sin(z / 23 + x / 31) + 3.5 * (fbm(x / 40, z / 40) - 0.5) * 2;
-  const rise = lerp(0, 22, smooth(ramp(-z, 990, 1060)));
-  return shelf + dunes * smooth(ramp(-z, 520, 640)) + rise;
+  const rise = lerp(0, 9, smooth(ramp(-z, -TUNNEL_Z - 60, -TUNNEL_Z)));
+  // rocky outcrops, kept clear of the cable's line
+  const clear = ramp(Math.abs(x - cableX(z)), 4, 14);
+  const outcrop = 7 * Math.max(0, fbm(x / 18 + 3, z / 18) - 0.5) * clear;
+  return shelf + (dunes + outcrop) * smooth(ramp(-z, 520, 640)) + rise;
 }
 const cableX = (z: number) => 72 + 1.4 * Math.sin(z / 37);
 const cableY = (z: number) => seabedY(cableX(z), z) + 0.36;
@@ -211,6 +214,20 @@ function buildRoom(scene: THREE.Scene) {
   book.position.set(-0.24, DESK_Y + 0.009, -1.28);
   book.rotation.y = 0.25;
   room.add(mug, coffee, book);
+  // a warm desk lamp at the far corner: key light on the thumb and desk, a glowing shade in the background
+  const lampMat = new THREE.MeshStandardMaterial({ color: 0x1a1612, roughness: 0.5, metalness: 0.3 });
+  const lampBase = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.02, 32), lampMat);
+  lampBase.position.set(-0.62, DESK_Y + 0.01, -2.05);
+  const lampPole = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.42, 12), lampMat);
+  lampPole.position.set(-0.62, DESK_Y + 0.22, -2.05);
+  const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.13, 0.15, 40, 1, true),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 1.5, 0.75), side: THREE.DoubleSide }));
+  shade.position.set(-0.62, DESK_Y + 0.46, -2.05);
+  room.add(lampBase, lampPole, shade);
+  const lamp = new THREE.SpotLight(0xffb070, 2.6, 4, 0.42, 0.85, 1.4);
+  lamp.position.set(-0.62, DESK_Y + 0.42, -2.05);
+  lamp.target.position.set(0.1, DESK_Y + 0.04, -1.3);
+  room.add(lamp, lamp.target);
 
   const router = new THREE.Group();
   const rbody = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.035, 0.15), new THREE.MeshStandardMaterial({ color: 0x0e0f12, roughness: 0.35, metalness: 0.2 }));
@@ -430,89 +447,153 @@ function buildWater(scene: THREE.Scene) {
   return mat;
 }
 
+/** Lighting shared by everything on the sea floor: depth-dimmed ambient, caustics, dappled light, the pulse. */
+const SEA_GLSL = /* glsl */ `
+  uniform vec3 uPL, uPLc; uniform float uTime;
+  float hash3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float noise3(vec3 x) {
+    vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash3(i), hash3(i + vec3(1,0,0)), f.x), mix(hash3(i + vec3(0,1,0)), hash3(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash3(i + vec3(0,0,1)), hash3(i + vec3(1,0,1)), f.x), mix(hash3(i + vec3(0,1,1)), hash3(i + vec3(1,1,1)), f.x), f.y), f.z);
+  }
+  float fbm3(vec3 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 4; i++) { s += a * noise3(p); p *= 2.07; a *= 0.5; } return s; }
+  vec3 seaLight(vec3 albedo, vec3 n, vec3 w) {
+    float depth = smoothstep(-6.0, -32.0, w.y);
+    float up = max(n.y, 0.0);
+    vec3 amb = mix(vec3(0.07, 0.22, 0.3), vec3(0.008, 0.03, 0.055), depth) * (0.3 + 0.7 * up);
+    vec2 q = w.xz * 0.55;
+    float c1 = sin(q.x + sin(q.y * 1.3 + uTime * 1.1)) * sin(q.y + sin(q.x * 1.7 - uTime * 0.9));
+    float caust = pow(abs(c1), 5.0) * 1.4 * (1.0 - depth) * up;
+    // deeper down, only soft drifting patches of light reach the bottom
+    float dap = smoothstep(0.45, 0.9, noise3(vec3(w.xz * 0.05, uTime * 0.12))) * 0.22 * depth * up;
+    vec3 L = uPL - w; float d = length(L);
+    vec3 pl = uPLc * max(dot(n, L / d), 0.0) / (1.0 + d * d * 0.7);
+    return albedo * (amb + vec3(0.35, 0.75, 0.85) * caust + vec3(0.06, 0.2, 0.28) * dap + pl);
+  }
+`;
+
+const TUNNEL_Z = -830;
+
 function buildSeafloor(scene: THREE.Scene, rnd: () => number) {
   const under = new THREE.Group();
-  const W0 = 220, L = 760, z0 = QUAY_Z - 4;
-  const geo = new THREE.PlaneGeometry(W0, L, 110, 380);
+  const seaUniforms = () => THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+    uTime: { value: 0 }, uPL: { value: new THREE.Vector3() }, uPLc: { value: new THREE.Color() },
+  }]);
+  const W0 = 200, L = 440, z0 = QUAY_Z - 4;
+  const geo = new THREE.PlaneGeometry(W0, L, 200, 440);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position as THREE.BufferAttribute;
-  const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i) + 72, z = pos.getZ(i) + z0 - L / 2;
     pos.setXYZ(i, x, seabedY(x, z), z);
-    const v = 0.75 + 0.5 * fbm(x / 9, z / 9);
-    colors[i * 3] = 0.42 * v; colors[i * 3 + 1] = 0.44 * v; colors[i * 3 + 2] = 0.4 * v;
   }
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
   const seabedMat = new THREE.ShaderMaterial({
-    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
-      uTime: { value: 0 }, uPL: { value: new THREE.Vector3() }, uPLc: { value: new THREE.Color() },
-    }]),
-    fog: true, vertexColors: true,
+    uniforms: seaUniforms(),
+    fog: true,
     vertexShader: /* glsl */ `
-      varying vec3 vW; varying vec3 vN; varying vec3 vC;
+      varying vec3 vW; varying vec3 vN;
       #include <fog_pars_vertex>
-      void main(){ vC = color; vN = normalize(mat3(modelMatrix) * normal); vec4 wp = modelMatrix * vec4(position,1.0); vW = wp.xyz;
+      void main(){ vN = normalize(mat3(modelMatrix) * normal); vec4 wp = modelMatrix * vec4(position,1.0); vW = wp.xyz;
         vec4 mvPosition = viewMatrix * wp; gl_Position = projectionMatrix * mvPosition;
         #include <fog_vertex>
       }`,
     fragmentShader: /* glsl */ `
-      uniform float uTime; uniform vec3 uPL, uPLc;
-      varying vec3 vW; varying vec3 vN; varying vec3 vC;
+      varying vec3 vW; varying vec3 vN;
+      ${SEA_GLSL}
       #include <fog_pars_fragment>
       void main(){
-        // sand ripples bend the normal
+        float rock = smoothstep(0.46, 0.7, fbm3(vW * 0.11 + 3.0));
+        float n1 = fbm3(vW * 0.9), n2 = noise3(vW * 4.0);
+        vec3 sand = vec3(0.34, 0.35, 0.31) * (0.85 + 0.25 * n2);
+        vec3 stone = vec3(0.13, 0.15, 0.16) * (0.55 + 0.9 * n1);
+        vec3 albedo = mix(sand, stone, rock);
+        albedo *= 0.85 + 0.25 * smoothstep(0.55, 0.75, noise3(vW * 22.0)); // gravel
+        albedo = mix(albedo, vec3(0.13, 0.15, 0.11), smoothstep(0.6, 0.8, n1) * rock * 0.35); // growth
+        // bumpy normal from the gradient of a noise height field
+        float e = 0.06; float h0 = fbm3(vW * 2.6);
+        vec2 g = vec2(fbm3((vW + vec3(e, 0, 0)) * 2.6) - h0, fbm3((vW + vec3(0, 0, e)) * 2.6) - h0) / e;
+        vec3 n = normalize(vN - vec3(g.x, 0.0, g.y) * (0.12 + 0.5 * rock));
         float ph = vW.x * 2.1 + vW.z * 0.9 + sin(vW.z * 0.35) * 2.0;
-        vec3 n = normalize(vN + vec3(cos(ph) * 0.22, 0.0, cos(ph) * 0.1));
-        vec3 sand = vC;
-        vec3 amb = vec3(0.06, 0.2, 0.26) * (0.45 + 0.55 * n.y);
-        // caustics from the surface, strongest in the shallows
-        vec2 q = vW.xz * 0.55;
-        float c1 = sin(q.x + sin(q.y * 1.3 + uTime * 1.1)) * sin(q.y + sin(q.x * 1.7 - uTime * 0.9));
-        float caust = pow(abs(c1), 5.0) * 1.6 * smoothstep(-34.0, -6.0, vW.y);
-        vec3 L = uPL - vW; float d = length(L);
-        vec3 pl = uPLc * max(dot(n, L / d), 0.0) / (1.0 + d * d * 1.2);
-        vec3 col = sand * (amb + vec3(0.35, 0.75, 0.85) * caust + pl);
-        gl_FragColor = vec4(col, 1.0);
+        n = normalize(n + vec3(cos(ph) * 0.15, 0.0, cos(ph) * 0.07) * (1.0 - rock));
+        gl_FragColor = vec4(seaLight(albedo, n, vW), 1.0);
         #include <fog_fragment>
       }`,
   });
   under.add(new THREE.Mesh(geo, seabedMat));
 
-  // rocks
-  // smooth, lumpy boulders: displace a merged icosphere with noise of the position itself
-  const rockGeo = mergeVertices(new THREE.IcosahedronGeometry(1, 4).deleteAttribute('uv').deleteAttribute('normal'));
+  // rocks in three sizes: boulders off to the sides, stones, and pebbles along the cable
+  const rockGeo = mergeVertices(new THREE.IcosahedronGeometry(1, 3).deleteAttribute('uv').deleteAttribute('normal'));
   const rp = rockGeo.attributes.position as THREE.BufferAttribute;
   for (let i = 0; i < rp.count; i++) {
     const v = new THREE.Vector3().fromBufferAttribute(rp, i);
-    const k = 0.7 + 0.45 * fbm(v.x * 1.3 + 7, v.z * 1.3 + v.y * 0.7) + 0.08 * vnoise(v.x * 6, v.y * 6 + v.z * 3);
+    const k = 0.7 + 0.45 * fbm(v.x * 1.3 + 7, v.z * 1.3 + v.y * 0.7) + 0.1 * vnoise(v.x * 6, v.y * 6 + v.z * 3);
     v.multiplyScalar(k);
-    rp.setXYZ(i, v.x, v.y * 0.55, v.z);
+    rp.setXYZ(i, v.x, v.y * 0.6, v.z);
   }
   rockGeo.computeVertexNormals();
-  const N = 900;
-  const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0x2c3438, roughness: 1 }), N);
+  const rockMat = new THREE.ShaderMaterial({
+    uniforms: seaUniforms(),
+    fog: true,
+    vertexShader: /* glsl */ `
+      varying vec3 vW; varying vec3 vN; varying vec3 vL;
+      #include <fog_pars_vertex>
+      void main(){ vL = position; vec4 wp = modelMatrix * instanceMatrix * vec4(position,1.0); vW = wp.xyz;
+        vN = normalize(mat3(modelMatrix * instanceMatrix) * normal);
+        vec4 mvPosition = viewMatrix * wp; gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: /* glsl */ `
+      varying vec3 vW; varying vec3 vN; varying vec3 vL;
+      ${SEA_GLSL}
+      #include <fog_pars_fragment>
+      void main(){
+        float n1 = fbm3(vW * 1.7);
+        vec3 albedo = vec3(0.14, 0.16, 0.17) * (0.5 + 0.9 * n1);
+        // encrusting growth on upward faces
+        float top = smoothstep(0.3, 0.9, normalize(vN).y) * smoothstep(0.42, 0.7, fbm3(vW * 1.6 + 5.0));
+        albedo = mix(albedo, vec3(0.12, 0.14, 0.1) * (0.8 + 0.4 * n1), top * 0.6);
+        float e = 0.04; float h0 = fbm3(vW * 4.0);
+        vec3 g = vec3(fbm3((vW + vec3(e,0,0)) * 4.0) - h0, fbm3((vW + vec3(0,e,0)) * 4.0) - h0, fbm3((vW + vec3(0,0,e)) * 4.0) - h0) / e;
+        vec3 n = normalize(normalize(vN) - g * 0.35);
+        gl_FragColor = vec4(seaLight(albedo, n, vW), 1.0);
+        #include <fog_fragment>
+      }`,
+  });
+  const classes: [number, number, number, number][] = [
+    // count, min scale, max scale, max distance from the cable
+    [520, 0.8, 4.5, 60],
+    [900, 0.15, 0.7, 25],
+    [1300, 0.03, 0.14, 2.6],
+  ];
+  const total = classes.reduce((a, c) => a + c[0], 0);
+  const rocks = new THREE.InstancedMesh(rockGeo, rockMat, total);
   const m4 = new THREE.Matrix4();
   const q = new THREE.Quaternion();
-  for (let i = 0; i < N; i++) {
-    const z = z0 - 60 - rnd() * (L - 80);
-    let x = 72 + (rnd() - 0.5) * 120;
-    if (Math.abs(x - cableX(z)) < 2.2) x += 4;
-    const s = 0.3 + Math.pow(rnd(), 3) * 3.5;
-    q.setFromEuler(new THREE.Euler(rnd() * 3, rnd() * 3, rnd() * 3));
-    m4.compose(new THREE.Vector3(x, seabedY(x, z) + s * 0.15, z), q, new THREE.Vector3(s, s, s));
-    rocks.setMatrixAt(i, m4);
+  let ri = 0;
+  for (const [count, s0, s1, spread] of classes) {
+    for (let i = 0; i < count; i++) {
+      const z = z0 - 40 - rnd() * (TUNNEL_Z * -1 + z0 - 40);
+      const side = rnd() < 0.5 ? -1 : 1;
+      const minD = spread > 10 ? 1.4 + s1 * 0.6 : 0.22;
+      const x = cableX(z) + side * (minD + rnd() * spread);
+      const s = s0 + Math.pow(rnd(), 2.5) * (s1 - s0);
+      q.setFromEuler(new THREE.Euler(rnd() * 3, rnd() * 3, rnd() * 3));
+      m4.compose(new THREE.Vector3(x, seabedY(x, z) + s * 0.1, z), q, new THREE.Vector3(s, s * (0.7 + rnd() * 0.6), s));
+      rocks.setMatrixAt(ri++, m4);
+    }
   }
+  rocks.frustumCulled = false;
   under.add(rocks);
 
-  // the cable: armoured, dark, glowing where the light is travelling through it
+  // the cable: armoured and encrusted, glowing faintly, brightly where the pulse is
   const pts: THREE.Vector3[] = [];
   pts.push(new THREE.Vector3(72, -3.5, QUAY_Z - 4.2));
-  for (let z = QUAY_Z - 12; z > -1085; z -= 4) pts.push(new THREE.Vector3(cableX(z), z < -1040 ? lerp(cableY(z), -9.6, ramp(-z, 1040, 1075)) : cableY(z), z));
+  for (let z = QUAY_Z - 12; z > TUNNEL_Z - 5; z -= 4) {
+    pts.push(new THREE.Vector3(cableX(z), z < TUNNEL_Z + 40 ? lerp(cableY(z), -25.6, ramp(-z, -TUNNEL_Z - 40, -TUNNEL_Z - 5)) : cableY(z), z));
+  }
   const curve = new THREE.CatmullRomCurve3(pts);
   const cableLen = curve.getLength();
-  // arc length along the cable as a function of z, so the glow sits exactly on the light
   const spaced = curve.getSpacedPoints(6000);
   const alongAt = (z: number) => {
     let lo = 0, hi = spaced.length - 1;
@@ -522,9 +603,7 @@ function buildSeafloor(scene: THREE.Scene, rnd: () => number) {
   };
   const tube = new THREE.TubeGeometry(curve, 2400, 0.15, 16, false);
   const cableMat = new THREE.ShaderMaterial({
-    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
-      uHead: { value: 0 }, uLen: { value: cableLen }, uOn: { value: 0 }, uPL: { value: new THREE.Vector3() },
-    }]),
+    uniforms: THREE.UniformsUtils.merge([seaUniforms(), { uHead: { value: 0 }, uLen: { value: cableLen }, uOn: { value: 0 } }]),
     fog: true,
     vertexShader: /* glsl */ `
       varying vec2 vUv; varying vec3 vN; varying vec3 vW;
@@ -534,18 +613,24 @@ function buildSeafloor(scene: THREE.Scene, rnd: () => number) {
         #include <fog_vertex>
       }`,
     fragmentShader: /* glsl */ `
-      uniform float uHead, uLen, uOn; uniform vec3 uPL;
+      uniform float uHead, uLen, uOn;
       varying vec2 vUv; varying vec3 vN; varying vec3 vW;
+      ${SEA_GLSL}
       #include <fog_pars_fragment>
       void main(){
         float along = vUv.x * uLen;
         float helix = smoothstep(0.35, 0.5, abs(fract(along / 0.06 + vUv.y * 6.0) - 0.5));
-        vec3 base = mix(vec3(0.025, 0.03, 0.033), vec3(0.07, 0.075, 0.08), helix);
+        vec3 albedo = mix(vec3(0.03, 0.034, 0.038), vec3(0.06, 0.065, 0.07), helix);
+        float growth = smoothstep(0.5, 0.7, fbm3(vec3(along * 0.8, vUv.y * 3.0, 1.0)));
+        albedo = mix(albedo, vec3(0.17, 0.19, 0.12), growth * 0.7);
+        vec3 n = normalize(vN);
+        vec3 c = seaLight(albedo, n, vW);
+        // faint light leaking all along, a bright pulse where the light is, and its fading wake
         float behind = uHead - along;
-        float glow = (behind > 0.0 ? exp(-behind / 0.7) + exp(-behind / 30.0) * 0.04 : exp(behind / 0.4)) * uOn;
-        vec3 L = normalize(uPL - vW);
-        float lit = max(dot(normalize(vN), L), 0.0) / (1.0 + dot(uPL - vW, uPL - vW) * 2.0);
-        vec3 c = base + base * vec3(0.35, 0.85, 1.0) * lit * 5.0 + vec3(0.2, 0.7, 1.0) * glow * (0.6 + 0.4 * helix) * 0.9;
+        float pulse = exp(-abs(behind) / 0.6);
+        float wake = behind > 0.0 ? exp(-behind / 14.0) * 0.12 : 0.0;
+        float glow = (0.004 + pulse * 0.9 + wake) * uOn;
+        c += vec3(0.15, 0.65, 1.0) * glow * (0.55 + 0.45 * helix) * (1.0 - growth * 0.5);
         gl_FragColor = vec4(c, 1.0);
         #include <fog_fragment>
       }`,
@@ -554,44 +639,98 @@ function buildSeafloor(scene: THREE.Scene, rnd: () => number) {
 
   // landing tunnel: a concrete wall in the slope with a dark mouth
   const concrete = new THREE.MeshStandardMaterial({ color: 0x3a3f42, roughness: 0.95 });
-  const wallZ = -1080;
-  for (const [w, h, x, y] of [[90, 30, 72 - 48, -4], [90, 30, 72 + 48, -4], [6, 20, 72, 4.5]] as const) {
+  for (const [w, h, x, y] of [[90, 30, 72 - 48, -20], [90, 30, 72 + 48, -20], [6, 20, 72, -11]] as const) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 6), concrete);
-    m.position.set(x, y, wallZ);
+    m.position.set(x, y, TUNNEL_Z);
     under.add(m);
   }
   const mouth = new THREE.Mesh(new THREE.BoxGeometry(6, 6, 30), new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide }));
-  mouth.position.set(72, -8, wallZ - 14);
+  mouth.position.set(72, -24, TUNNEL_Z - 14);
   under.add(mouth);
 
-  // light shafts from the surface
-  const shafts = new THREE.Group();
-  const shaftMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uFade: { value: 1 } },
-    vertexShader: /* glsl */ `varying vec3 vN; varying vec3 vV; varying float vY;
-      void main(){ vY = uv.y; vec4 wp = modelMatrix * vec4(position,1.0); vN = normalize(mat3(modelMatrix)*normal); vV = normalize(cameraPosition - wp.xyz); gl_Position = projectionMatrix * viewMatrix * wp; }`,
-    fragmentShader: /* glsl */ `uniform float uTime, uFade; varying vec3 vN; varying vec3 vV; varying float vY;
-      void main(){ float edge = pow(abs(dot(vN, vV)), 2.5); float a = edge * pow(vY, 2.0) * smoothstep(1.0, 0.92, vY) * 0.06 * uFade;
-        gl_FragColor = vec4(vec3(0.45, 0.8, 0.95) * a, 1.0); }`,
+  // water column: lighter toward the surface, falling away to black below; follows the camera
+  const waterDome = new THREE.Mesh(new THREE.SphereGeometry(300, 48, 24), new THREE.ShaderMaterial({
+    uniforms: { uDepth: { value: 0 } },
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    vertexShader: `varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: /* glsl */ `
+      uniform float uDepth; varying vec3 vD;
+      void main(){
+        float y = vD.y;
+        vec3 horizon = mix(vec3(0.012, 0.06, 0.1), vec3(0.004, 0.022, 0.045), uDepth);
+        vec3 above = mix(vec3(0.06, 0.24, 0.34), vec3(0.02, 0.09, 0.15), uDepth);
+        vec3 c = mix(horizon, above, smoothstep(0.0, 0.85, y));
+        c = mix(c, vec3(0.0005, 0.002, 0.005), smoothstep(0.0, -0.5, y));
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  }));
+  waterDome.renderOrder = -1;
+  under.add(waterDome);
+
+  // light rays from the surface: streaky sheets that follow the camera through the water column
+  const NR = 16;
+  const rayGeo = new THREE.BufferGeometry();
+  const rv: number[] = [], ruv: number[] = [], rseed: number[] = [], idx: number[] = [];
+  for (let i = 0; i < NR; i++) {
+    const b = i * 4;
+    const sx = rnd(), sz = rnd(), w = 4 + rnd() * 9;
+    for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+      rv.push(sx, sz, w); ruv.push(u, v); rseed.push(i);
+    }
+    idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  }
+  rayGeo.setAttribute('position', new THREE.Float32BufferAttribute(rv, 3));
+  rayGeo.setAttribute('uv', new THREE.Float32BufferAttribute(ruv, 2));
+  rayGeo.setAttribute('seed', new THREE.Float32BufferAttribute(rseed, 1));
+  rayGeo.setIndex(idx);
+  const rayMat = new THREE.ShaderMaterial({
+    uniforms: { uCam: { value: new THREE.Vector3() }, uTime: { value: 0 } },
+    vertexShader: /* glsl */ `
+      attribute float seed; uniform vec3 uCam; uniform float uTime;
+      varying vec2 vUv; varying float vY; varying float vSeed; varying float vDist;
+      void main(){
+        vUv = uv; vSeed = seed;
+        // anchor on a grid that wraps around the camera, ahead of it and to the sides
+        vec2 box = vec2(60.0, 70.0);
+        vec2 anchor = vec2(position.x * box.x, position.y * box.y) - box * 0.5;
+        vec2 rel = mod(anchor - uCam.xz + box * 0.5 + uTime * vec2(0.4, 0.0), box) - box * 0.5;
+        vec3 base = vec3(uCam.x + rel.x, -2.0, uCam.z + rel.y);
+        // sheet faces the camera (yaw only) and leans with the sun angle
+        vec3 toCam = normalize(vec3(uCam.x - base.x, 0.0, uCam.z - base.z) + vec3(1e-4));
+        vec3 right = vec3(toCam.z, 0.0, -toCam.x);
+        float width = position.z;
+        vec3 lean = normalize(vec3(0.25, -1.0, 0.18));
+        vec3 p = base + right * (uv.x - 0.5) * width + lean * (1.0 - uv.y) * 46.0;
+        vY = p.y; vDist = length(p - uCam);
+        gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform float uTime; varying vec2 vUv; varying float vY; varying float vSeed; varying float vDist;
+      float h(float n){ return fract(sin(n * 91.7) * 4375.85); }
+      float n1(float x){ float i = floor(x); float f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(h(i), h(i + 1.0), f); }
+      void main(){
+        float x = vUv.x * 7.0 + vSeed * 13.0 + sin(uTime * 0.35 + vSeed) * 0.6;
+        float streak = pow(n1(x) * 0.7 + n1(x * 2.3 + uTime * 0.2) * 0.3, 3.0);
+        float edge = smoothstep(0.0, 0.2, vUv.x) * smoothstep(1.0, 0.8, vUv.x);
+        float fall = exp((vY + 2.0) / 16.0);           // strongest just below the surface
+        float near = smoothstep(1.5, 6.0, vDist) * (1.0 - smoothstep(30.0, 55.0, vDist));
+        float flicker = 0.75 + 0.25 * sin(uTime * 1.3 + vSeed * 5.0);
+        float a = streak * edge * fall * near * flicker * 0.22;
+        gl_FragColor = vec4(vec3(0.45, 0.8, 0.95) * a, 1.0);
+      }`,
     blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, side: THREE.DoubleSide,
   });
-  for (let i = 0; i < 26; i++) {
-    const r = 1 + rnd() * 3.5;
-    const m = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.8, r * 2.2, 60, 24, 1, true), shaftMat);
-    const z = QUAY_Z - 25 - rnd() * 260;
-    m.position.set(72 + (rnd() - 0.5) * 70, SEA_Y - 30, z);
-    m.rotation.set(0.25 + (rnd() - 0.5) * 0.12, 0, 0.18 + (rnd() - 0.5) * 0.12);
-    shafts.add(m);
-  }
-  under.add(shafts);
+  const rays = new THREE.Mesh(rayGeo, rayMat);
+  rays.frustumCulled = false;
+  under.add(rays);
 
-  // marine snow: wraps around the camera so it is always present
-  const NS = 7000;
+  // floating particles: marine snow around the camera, and plankton that sparks as the light passes
+  const NS = 12000;
   const base = new Float32Array(NS * 3);
   const sz = new Float32Array(NS);
   for (let i = 0; i < NS; i++) {
     base[i * 3] = rnd() * 40; base[i * 3 + 1] = rnd() * 24; base[i * 3 + 2] = rnd() * 60;
-    sz[i] = 0.3 + rnd() * 1.0;
+    sz[i] = 0.25 + Math.pow(rnd(), 3) * 1.8;
   }
   const sg = new THREE.BufferGeometry();
   sg.setAttribute('position', new THREE.BufferAttribute(base, 3));
@@ -599,30 +738,36 @@ function buildSeafloor(scene: THREE.Scene, rnd: () => number) {
   const snowMat = new THREE.ShaderMaterial({
     uniforms: { uCam: { value: new THREE.Vector3() }, uTime: { value: 0 }, uMap: { value: sharedGlow() }, uPL: { value: new THREE.Vector3() } },
     vertexShader: /* glsl */ `
-      attribute float sz; uniform vec3 uCam; uniform float uTime, uPL_unused; uniform vec3 uPL; varying float vA; varying float vLit;
+      attribute float sz; uniform vec3 uCam; uniform float uTime; uniform vec3 uPL;
+      varying float vA; varying float vLit; varying float vSpark;
+      float h(vec3 p){ p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
       void main(){
         vec3 box = vec3(40.0, 24.0, 60.0);
-        vec3 p = position + vec3(sin(uTime * 0.3 + position.z) * 0.4, -uTime * 0.25, cos(uTime * 0.2 + position.x) * 0.4);
+        vec3 p = position + vec3(sin(uTime * 0.3 + position.z) * 0.4, -uTime * 0.18, cos(uTime * 0.2 + position.x) * 0.4);
         p = mod(p - uCam + box * 0.5, box) - box * 0.5 + uCam;
         vec4 mv = viewMatrix * vec4(p, 1.0);
         float d = -mv.z;
-        vA = smoothstep(0.3, 2.0, d) * (1.0 - smoothstep(10.0, 26.0, d));
-        vLit = 1.0 / (1.0 + dot(p - uPL, p - uPL) * 1.5);
+        float depth = smoothstep(-6.0, -32.0, p.y);
+        vA = smoothstep(0.25, 1.5, d) * (1.0 - smoothstep(9.0, 24.0, d)) * mix(1.0, 0.55, depth);
+        float r2 = dot(p - uPL, p - uPL);
+        vLit = 1.0 / (1.0 + r2 * 1.2);
+        // disturbed plankton flash briefly near the passing light
+        vSpark = step(0.82, h(position + floor(uTime * 7.0))) * exp(-r2 / 6.0);
         gl_PointSize = sz * 60.0 / d;
         gl_Position = projectionMatrix * mv;
       }`,
-    fragmentShader: /* glsl */ `uniform sampler2D uMap; varying float vA; varying float vLit;
-      void main(){ float g = texture2D(uMap, gl_PointCoord).a; gl_FragColor = vec4((vec3(0.35, 0.55, 0.62) + vec3(0.4, 1.0, 1.3) * vLit * 1.5) * g * vA * 0.5, 1.0); }`,
+    fragmentShader: /* glsl */ `uniform sampler2D uMap; varying float vA; varying float vLit; varying float vSpark;
+      void main(){ float g = texture2D(uMap, gl_PointCoord).a;
+        vec3 c = vec3(0.3, 0.48, 0.55) * 0.5 + vec3(0.4, 1.0, 1.3) * vLit * 1.4 + vec3(0.3, 1.6, 1.2) * vSpark * 2.0;
+        gl_FragColor = vec4(c * g * vA, 1.0); }`,
     blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
   });
   const snow = new THREE.Points(sg, snowMat);
   snow.frustumCulled = false;
   under.add(snow);
 
-  const ambient = new THREE.HemisphereLight(0x2f7f9f, 0x05121a, 0.9);
-  under.add(ambient);
   scene.add(under);
-  return { under, curve, cableLen, cableMat, shaftMat, snowMat, seabedMat, alongAt };
+  return { under, curve, cableLen, cableMat, snowMat, seabedMat, rockMat, rayMat, waterDome, alongAt };
 }
 
 // ---- the set ----------------------------------------------------------------------------------
@@ -632,7 +777,7 @@ export async function homeSet(): Promise<FilmSet> {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(36, 16 / 9, 0.01, 6000);
   const cityFog = new THREE.FogExp2(0x161026, 0.0032);
-  const seaFog = new THREE.FogExp2(0x04304a, 0.05);
+  const seaFog = new THREE.FogExp2(0x000000, 0.045);
   scene.fog = cityFog;
   const sky = skyDome();
   scene.add(sky);
@@ -678,15 +823,15 @@ export async function homeSet(): Promise<FilmSet> {
   add([72, 3, -500], 10.1);
   add([72, -3, -518], 10.45);
   add([72, -16, -556], 10.95);
-  const zr0 = -606, zr1 = -1012;
+  const zr0 = -606, zr1 = TUNNEL_Z + 70;
   for (let i = 0; i <= 40; i++) {
     const s = i / 40;
     const z = lerp(zr0, zr1, s);
     add([cableX(z), cableY(z) + 0.24, z], 11.55 + (16.4 - 11.55) * Math.pow(s, 0.8));
   }
-  add([72, -8.5, -1060], 17.0);
-  add([72, -8.2, -1082], 17.35);
-  add([72, -8.2, -1110], 17.7);
+  add([72, -24.5, TUNNEL_Z + 22], 17.0);
+  add([72, -24.2, TUNNEL_Z], 17.35);
+  add([72, -24.2, TUNNEL_Z - 28], 17.7);
   const path = flight(pts, times);
 
   const light = new Particle({ size: 0.02, trail: 90, lightIntensity: 0.6, lightDistance: 3 });
@@ -694,8 +839,8 @@ export async function homeSet(): Promise<FilmSet> {
 
   // camera: keyframed close-up for the tap and the room, then a chase that follows the light
   const keyed = track([
-    { t: 0.0, p: [0.04, 40.805, -1.19], l: [0.012, 40.775, -1.5], fov: 40 },
-    { t: 1.8, p: [0.034, 40.8, -1.215], l: [0.014, 40.772, -1.5], fov: 39 },
+    { t: 0.0, p: [0.05, 40.815, -1.22], l: [0.012, 40.775, -1.5], fov: 40 },
+    { t: 1.8, p: [0.044, 40.812, -1.235], l: [0.014, 40.775, -1.5], fov: 39 },
     { t: 2.5, p: [0.1, 40.98, -1.1], l: [0.1, 40.95, -1.6], fov: 36 },
     { t: 3.2, p: [0.28, 41.08, -1.5], l: [0.62, 40.8, -2.12], fov: 40 },
     { t: 3.9, p: [0.55, 41.35, -2.05], l: [0.6, 41.3, -3.2], fov: 44 },
@@ -704,9 +849,12 @@ export async function homeSet(): Promise<FilmSet> {
   const chase = (t: number) => {
     const under = t > 10.5;
     const aerial = smooth(ramp(t, 4.0, 4.6)) * (1 - smooth(ramp(t, 5.2, 6.2)));
-    const back = under ? -2.4 : -9.5 - aerial * 30;
-    const p = path.offset(t, back).add(new THREE.Vector3(under ? 0.55 : 0, under ? 0.2 : 2.4 + aerial * 34, 0));
-    const l = path.offset(t, under ? 5 : 7).add(new THREE.Vector3(0, under ? -0.05 : 0, 0));
+    const aerialUp = 2.4 + aerial * 34;
+    if (!under) return { p: path.offset(t, -9.5 - aerial * 30).add(new THREE.Vector3(0, aerialUp, 0)), l: path.offset(t, 7) };
+    // underwater: glide low beside the cable with a slow, breathing sway
+    const p = path.offset(t, -2.2).add(new THREE.Vector3(0.62 + 0.12 * Math.sin(t * 0.9), 0.3 + 0.07 * Math.sin(t * 1.3 + 1), 0));
+    const l = path.offset(t, 6).add(new THREE.Vector3(0.1 * Math.sin(t * 0.6), -0.12, 0));
+    l.y = Math.min(l.y, path.at(t).y + 0.4); // never tilt up toward the surface
     return { p, l };
   };
 
@@ -730,14 +878,14 @@ export async function homeSet(): Promise<FilmSet> {
       light.light.distance = lerp(3, underwater ? 9 : 45, bigScale);
 
       // ---- phone, thumb, router
-      const screenB = 0.62 + 0.5 * Math.exp(-Math.max(0, t - 1.6) * 3) * ramp(t, 1.55, 1.62);
+      const screenB = 0.95 + 0.4 * Math.exp(-Math.max(0, t - 1.6) * 3) * ramp(t, 1.55, 1.62);
       phone.draw(t, screenB);
-      phone.glow.intensity = 0.05 * screenB;
+      phone.glow.intensity = 0.16 * screenB;
       const inP = easeInOut(ramp(t, 0.25, 1.35));
       const press = smooth(ramp(t, 1.35, 1.52)) * (1 - smooth(ramp(t, 1.66, 1.85)));
       const outP = easeInOut(ramp(t, 1.75, 2.7));
       const dir = new THREE.Vector3(0.82, 0.34, 0.46).normalize();
-      const tipOff = dir.clone().multiplyScalar(lerp(lerp(0.13, 0.0, inP), 0.2, outP)).add(new THREE.Vector3(0, -0.0035 * press, 0));
+      const tipOff = dir.clone().multiplyScalar(lerp(lerp(0.055, 0.0, inP), 0.2, outP)).add(new THREE.Vector3(0, -0.0035 * press, 0));
       thumb.position.copy(btn).add(tipOff).add(new THREE.Vector3(0, 0.0095, 0));
       const up = new THREE.Vector3(0, 1, 0);
       const zAxis = up.clone().sub(dir.clone().multiplyScalar(dir.dot(up))).normalize();
@@ -762,13 +910,14 @@ export async function homeSet(): Promise<FilmSet> {
       const along = clamp(sea.alongAt(ppos.z), 0, sea.cableLen);
       sea.cableMat.uniforms.uHead.value = along;
       sea.cableMat.uniforms.uOn.value = smooth(ramp(t, 11.3, 11.7));
-      sea.cableMat.uniforms.uPL.value.copy(ppos);
-      sea.shaftMat.uniforms.uTime.value = t;
       sea.snowMat.uniforms.uTime.value = t;
       sea.snowMat.uniforms.uPL.value.copy(ppos);
-      sea.seabedMat.uniforms.uTime.value = t;
-      sea.seabedMat.uniforms.uPL.value.copy(ppos);
-      sea.seabedMat.uniforms.uPLc.value.copy(LIGHT).multiplyScalar(0.6 * smooth(ramp(t, 10.6, 11.4)));
+      sea.rayMat.uniforms.uTime.value = t;
+      for (const m of [sea.seabedMat, sea.rockMat, sea.cableMat]) {
+        m.uniforms.uTime.value = t;
+        m.uniforms.uPL.value.copy(ppos);
+        m.uniforms.uPLc.value.copy(LIGHT).multiplyScalar(0.7 * smooth(ramp(t, 10.6, 11.4)));
+      }
 
       // ---- camera
       const k = keyed(t);
@@ -778,27 +927,33 @@ export async function homeSet(): Promise<FilmSet> {
       const camPos = k.p.clone().lerp(c.p, w);
       const look = k.l.clone().lerp(ppos, lookParticle * 0.85).lerp(c.l, w);
       const fov = lerp(k.fov, underwater ? 58 : 54, w);
-      aimCamera(camera, camPos, look, fov, w * Math.sin(t * 0.7) * 0.03);
+      aimCamera(camera, camPos, look, fov, w * Math.sin(t * 0.7) * (underwater ? 0.06 : 0.03));
       camera.near = t < 4 ? 0.005 : 0.1;
       camera.updateProjectionMatrix();
       sea.snowMat.uniforms.uCam.value.copy(camPos);
+      sea.rayMat.uniforms.uCam.value.copy(camPos);
+      sea.waterDome.position.copy(camPos);
 
       const below = camPos.y < SEA_Y;
       scene.fog = below ? seaFog : cityFog;
-      scene.background = below ? (seaFog.color as THREE.Color) : null;
+      scene.background = null;
+      // fog matches the horizon of the water column, darker the deeper we are
+      const depth = smooth(ramp(camPos.y, -6, -32));
+      seaFog.color.setRGB(lerp(0.012, 0.004, depth), lerp(0.06, 0.022, depth), lerp(0.1, 0.045, depth), THREE.LinearSRGBColorSpace);
+      (sea.waterDome.material as THREE.ShaderMaterial).uniforms.uDepth.value = depth;
+      sea.waterDome.visible = below;
       sea.under.visible = camPos.y < 6 || t > 9.6;
       sky.visible = !below;
       city.visible = !below || camPos.z > QUAY_Z - 80;
-      sea.shaftMat.uniforms.uFade.value = 1 - smooth(ramp(-camPos.z, 640, 760));
 
       // focus: on the phone during the tap, then on the light
-      const focusTarget = t < 2.1 ? k.l : ppos;
+      const focusTarget = t < 2.1 ? btn : ppos;
       const focus = v.copy(focusTarget).distanceTo(camPos);
-      const aperture = t < 2.6 ? 14 : below ? 7 : 4;
+      const aperture = t < 2.6 ? lerp(7, 12, smooth(ramp(t, 1.9, 2.6))) : below ? 7 : 4;
       return {
         scene, camera, focus, aperture,
         bloom: below ? 0.8 : t < 3.6 ? 0.9 : 0.6,
-        exposure: lerp(1.0, below ? 1.25 : 1.15, w),
+        exposure: lerp(lerp(1.4, 1.1, smooth(ramp(t, 2.0, 3.6))), below ? 1.25 : 1.15, w),
         flash: Math.max(0.12 * burst, smooth(ramp(t, 17.38, 17.6))),
       };
     },
