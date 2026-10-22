@@ -244,7 +244,7 @@ export async function spaceSet(): Promise<FilmSet> {
         scene, camera,
         focus: k.p.distanceTo(p), aperture: 1.2, bloom: 0.7, bloomRadius: 0.35,
         exposure: 1.15,
-        flash: Math.max(1 - smooth(ramp(t, SPACE_START, SPACE_START + 0.45)), smooth(ramp(t, 28.25, 28.6))),
+        flash: Math.max(1 - smooth(ramp(t, SPACE_START, SPACE_START + 0.3)), smooth(ramp(t, 28.38, 28.6))),
       };
     },
   };

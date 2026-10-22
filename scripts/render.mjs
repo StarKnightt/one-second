@@ -15,9 +15,10 @@ fs.mkdirSync(seg, { recursive: true });
 
 const FPS = 60;
 const FRAMES = Number(process.env.FRAMES ?? 34 * FPS); // FRAMES=120 renders a short test
-const WORKERS = Number(process.env.WORKERS ?? Math.max(1, Math.min(3, os.cpus().length - 1)));
-const CRF = process.env.CRF ?? '14';
-const MAX_BYTES = 95 * 1024 * 1024;
+// SwiftShader already spreads one page across every core; extra pages only add contention
+const WORKERS = Number(process.env.WORKERS ?? 1);
+const MEZZ_CRF = '8'; // near-lossless intermediate; the final encode is two-pass to a size budget
+const TARGET_MB = Number(process.env.TARGET_MB ?? 88);
 
 const server = await serve(path.join(root, 'dist'));
 const port = server.address().port;
@@ -59,7 +60,7 @@ async function worker(k) {
   const page = await openPage(browser, port);
   const file = path.join(seg, `seg${k}.mp4`);
   const enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'image2pipe', '-framerate', String(FPS),
-    '-c:v', 'mjpeg', '-i', '-', '-c:v', 'libx264', '-preset', 'slow', '-crf', CRF, '-tune', 'film',
+    '-c:v', 'mjpeg', '-i', '-', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', MEZZ_CRF, '-tune', 'film',
     '-pix_fmt', 'yuv420p', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709',
     '-x264-params', 'keyint=120:min-keyint=120', '-r', String(FPS), file], { stdio: ['pipe', 'inherit', 'inherit'] });
   for (let f = a; f < b; f++) {
@@ -81,13 +82,24 @@ await browser.close();
 server.close();
 
 fs.writeFileSync(path.join(seg, 'list.txt'), files.map((f) => `file '${f}'`).join('\n'));
+const mezz = path.join(seg, 'mezzanine.mp4');
+ff(['-f', 'concat', '-safe', '0', '-i', path.join(seg, 'list.txt'), '-c', 'copy', mezz]);
+
+// two-pass encode to a bitrate that lands under the size budget
+const seconds = FRAMES / FPS;
+const audioKbps = 256;
+const videoKbps = Math.floor((TARGET_MB * 8 * 1024) / seconds - audioKbps);
 const final = path.join(out, 'send.mp4');
-ff(['-f', 'concat', '-safe', '0', '-i', path.join(seg, 'list.txt'), '-i', path.join(out, 'master.wav'),
-  '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000',
+const x264 = ['-c:v', 'libx264', '-preset', 'slow', '-b:v', `${videoKbps}k`, '-maxrate', `${Math.round(videoKbps * 1.5)}k`,
+  '-bufsize', `${videoKbps * 2}k`, '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-tune', 'film',
+  '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-r', String(FPS)];
+ff(['-i', mezz, ...x264, '-pass', '1', '-passlogfile', path.join(seg, 'x264'), '-an', '-f', 'mp4', '/dev/null']);
+ff(['-i', mezz, '-i', path.join(out, 'master.wav'), '-map', '0:v', '-map', '1:a', ...x264, '-pass', '2',
+  '-passlogfile', path.join(seg, 'x264'), '-c:a', 'aac', '-b:a', `${audioKbps}k`, '-ar', '48000',
   '-movflags', '+faststart', '-shortest', final]);
 const size = fs.statSync(final).size;
-console.log(`wrote ${final} · ${(size / 1048576).toFixed(1)} MB · ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-if (size > MAX_BYTES) {
-  console.error('over 95 MB: re-run with a higher CRF, e.g. CRF=20 pnpm render');
+console.log(`wrote ${final} · ${(size / 1048576).toFixed(1)} MB · video ${videoKbps} kb/s · ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+if (size > 95 * 1024 * 1024) {
+  console.error('over 95 MB: re-run with a lower TARGET_MB');
   process.exit(1);
 }

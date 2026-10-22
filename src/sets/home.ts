@@ -799,7 +799,7 @@ export async function homeSet(): Promise<FilmSet> {
         scene, camera, focus, aperture,
         bloom: below ? 0.8 : t < 3.6 ? 0.9 : 0.6,
         exposure: lerp(1.0, below ? 1.25 : 1.15, w),
-        flash: Math.max(0.12 * burst, smooth(ramp(t, 17.25, 17.6))),
+        flash: Math.max(0.12 * burst, smooth(ramp(t, 17.38, 17.6))),
       };
     },
   };

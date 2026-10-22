@@ -187,7 +187,7 @@ export function bedroomSet(): FilmSet {
       const shake = buzz * 0.0012;
       aimCamera(camera, k.p.clone().add(new THREE.Vector3((hash(f + 1) - 0.5) * shake, (hash(f + 2) - 0.5) * shake, 0)),
         k.l.clone().lerp(p, arrived ? 0 : 0.4), k.fov);
-      const flashIn = 1 - smooth(ramp(t, BED_START, BED_START + 0.4));
+      const flashIn = 1 - smooth(ramp(t, BED_START, BED_START + 0.25));
       const impact = Math.exp(-Math.max(0, t - 29.22) * 9) * (t > 29.22 ? 1 : 0);
       return {
         scene, camera,

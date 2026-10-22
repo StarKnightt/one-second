@@ -96,7 +96,7 @@ export class Post {
           c *= 1.0 - uFade;
           c = toSRGB(c);
           float g = h(vUv * vec2(1920.0, 1080.0) + uFrame * 17.13) - 0.5;
-          c += g * 0.028;
+          c += g * 0.018;
           gl_FragColor = vec4(c, 1.0);
         }`,
     }));

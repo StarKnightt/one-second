@@ -48,7 +48,7 @@ function rackMaterial() {
         if (front) {
           // local face coords: u across the rack (0..1), v up (0..1)
           float u = vL.z / ${RACK.w.toFixed(2)} + 0.5;
-          float v = vL.y / ${RACK.h.toFixed(2)} + 0.5;
+          float v = vL.y / ${RACK.h.toFixed(2)}; // geometry stands on the floor: y runs 0..h
           float units = 40.0;
           float unit = floor(v * units);
           float uv = fract(v * units);
@@ -68,12 +68,12 @@ function rackMaterial() {
             float sel = h(vec3(meta.x, unit, fk + 9.0));
             vec3 lc = sel < 0.62 ? vec3(0.15, 0.55, 1.4) : sel < 0.9 ? vec3(0.25, 1.4, 0.45) : vec3(1.6, 0.75, 0.15);
             float led = smoothstep(1.0, 0.0, d) * filled * slab;
-            col += lc * led * on * 2.2 * (1.0 - hot);
-            col += vec3(0.4, 1.6, 2.2) * led * hot * 4.0;
+            col += lc * led * on * 0.55 * (1.0 - hot);
+            col += vec3(0.4, 1.6, 2.2) * led * hot * 1.1;
           }
           // a status strip that runs the height of the rack
-          col += vec3(0.08, 0.25, 0.6) * smoothstep(0.012, 0.0, abs(u - 0.985)) * 0.8;
-          col += vec3(0.25, 0.85, 1.2) * hot * 0.12;
+          col += vec3(0.08, 0.25, 0.6) * smoothstep(0.012, 0.0, abs(u - 0.985)) * 0.35;
+          col += vec3(0.25, 0.85, 1.2) * hot * 0.05;
         } else if (n.y > 0.5) {
           col = vec3(0.02, 0.022, 0.026);
         }
@@ -157,7 +157,7 @@ export function dataCenterSet(): FilmSet {
   scene.add(floor);
 
   // ceiling: light strips over each aisle, cable trays over each row, and their reflections
-  const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 2.8, 3.2) });
+  const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.6, 1.85) });
   const stripMirror = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.55, 0.65) });
   const trayMat = new THREE.MeshStandardMaterial({ color: 0x3a3320, roughness: 0.6, metalness: 0.4 });
   for (const ax of AISLES) {
@@ -181,7 +181,7 @@ export function dataCenterSet(): FilmSet {
   ceiling.position.set(0, 3.9, -20);
   scene.add(ceiling);
   // a vertical shaft of light in the ceiling above the hot rack: where the message leaves
-  const skylight = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.2, 40), new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 4.4, 5) }));
+  const skylight = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.2, 40), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.4, 1.5, 1.7) }));
   skylight.position.set(0.6, 3.92, hotPos.z);
   scene.add(skylight);
 
@@ -201,7 +201,9 @@ export function dataCenterSet(): FilmSet {
 
   // the landing tunnel the light arrives through
   const tunnelMat = new THREE.MeshStandardMaterial({ color: 0x1b1f24, roughness: 0.95, side: THREE.BackSide });
-  const tunnel = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 30), tunnelMat);
+  // open at both ends: only the walls, floor and ceiling are drawn
+  const open = new THREE.MeshBasicMaterial({ visible: false });
+  const tunnel = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 30), [tunnelMat, tunnelMat, tunnelMat, tunnelMat, open, open]);
   tunnel.position.set(0, 1.5, 20);
   scene.add(tunnel);
   for (let k = 0; k < 8; k++) {
@@ -233,7 +235,7 @@ export function dataCenterSet(): FilmSet {
     [0, 1.5, 22], [0, 1.5, 12], [0, 1.45, 3], [0, 1.4, -8], [0.05, 1.35, hz + 5], [0.35, 1.3, hz + 1],
     [0.66, 1.25, hz], [0.66, 1.25, hz - 0.01],
     [0.6, 2.5, hz], [0.6, 3.9, hz], [0.6, 9, hz],
-  ], [DC_START - 0.3, DC_START + 0.5, 18.6, 19.5, 20.05, 20.3, 20.5, 21.25, 21.6, 22.0, 22.9]);
+  ], [DC_START - 0.4, 17.75, 18.3, 19.2, 20.05, 20.3, 20.5, 21.25, 21.6, 22.0, 22.9]);
   const light = new Particle({ size: 0.05, trail: 70, lightIntensity: 4, lightDistance: 8, trailSize: 0.05 });
   (light.trail.material as THREE.ShaderMaterial).uniforms.uSize.value = 34;
   light.addTo(scene);
@@ -244,8 +246,8 @@ export function dataCenterSet(): FilmSet {
     { t: 19.6, p: [-0.35, 1.7, -4], l: [0.1, 1.4, hz + 3], fov: 50 },
     { t: 20.4, p: [-0.5, 1.55, hz + 3.2], l: [0.66, 1.25, hz], fov: 44 },
     { t: 21.2, p: [-0.55, 1.45, hz + 2.4], l: [0.66, 1.3, hz], fov: 42 },
-    { t: 21.9, p: [-0.6, 1.2, hz + 2.6], l: [0.6, 3.4, hz], fov: 52 },
-    { t: 22.9, p: [-0.4, 1.4, hz + 2.2], l: [0.6, 8, hz], fov: 56 },
+    { t: 21.9, p: [-0.5, 1.45, hz + 2.1], l: [0.66, 1.55, hz], fov: 40 },
+    { t: 23.0, p: [-0.3, 1.45, hz + 1.3], l: [0.66, 1.65, hz], fov: 36 },
   ]);
 
   return {
@@ -255,7 +257,7 @@ export function dataCenterSet(): FilmSet {
       const inside = ramp(t, 20.45, 20.55) * (1 - ramp(t, 21.2, 21.3));
       const p = light.update(path.at, t, 0.006, 1 - inside);
       light.light.intensity = 4 * (1 - inside) + 0.5;
-      const hot = smooth(ramp(t, 20.45, 20.7)) * (1 - smooth(ramp(t, 21.2, 21.9)));
+      const hot = smooth(ramp(t, 20.45, 20.7)) * (1 - 0.6 * smooth(ramp(t, 21.2, 21.6))) + 0.6 * smooth(ramp(t, 22.2, 22.9));
       for (const m of [mat, mirrorMat]) {
         m.uniforms.uTime.value = t;
         m.uniforms.uHotAmt.value = hot;
@@ -264,16 +266,16 @@ export function dataCenterSet(): FilmSet {
       }
       const c = cam(t);
       // look at the light while it is visible, otherwise at the keyed target
-      const look = c.l.clone().lerp(p, 0.55 * (1 - inside));
+      const look = c.l.clone().lerp(p, 0.55 * (1 - inside) * (1 - smooth(ramp(t, 21.0, 21.4))));
       aimCamera(camera, c.p, look, c.fov);
-      const flashIn = 1 - smooth(ramp(t, DC_START, DC_START + 0.35));
+      const flashIn = 1 - smooth(ramp(t, DC_START, DC_START + 0.25));
       return {
         scene, camera,
         focus: Math.max(0.5, c.p.distanceTo(inside > 0.5 ? new THREE.Vector3(0.66, 1.3, hz) : p)),
         aperture: 6,
-        bloom: 0.75,
-        exposure: 1.2,
-        flash: Math.max(flashIn, smooth(ramp(t, 22.45, 23.0))),
+        bloom: 0.5,
+        exposure: 1.0,
+        flash: Math.max(flashIn, smooth(ramp(t, 22.7, 23.0))),
       };
     },
   };
