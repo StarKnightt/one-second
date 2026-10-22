@@ -18,12 +18,15 @@ export function serve(dir) {
 }
 
 export async function launch() {
-  // software rasterization only, so pixels do not depend on a GPU
-  return chromium.launch({ args: ['--disable-gpu', '--force-color-profile=srgb', '--font-render-hinting=none'] });
+  // WebGL on SwiftShader (CPU): identical pixels on any machine, no GPU needed
+  return chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--force-color-profile=srgb', '--font-render-hinting=none'] });
 }
 
 export async function openPage(browser, port) {
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+  page.setDefaultTimeout(0);
+  page.on('console', (m) => { if (m.type() === 'error') console.error('[page]', m.text()); });
+  page.on('pageerror', (e) => console.error('[page]', e.message));
   await page.goto(`http://127.0.0.1:${port}/?render`);
   await page.evaluate(() => window.ready);
   return page;

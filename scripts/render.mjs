@@ -1,4 +1,5 @@
-// Deterministic render: every frame is drawn from its timestamp alone, captured as PNG,
+// Deterministic render: every frame is drawn from its timestamp alone (three.js on SwiftShader),
+// captured as a high-quality JPEG,
 // and piped to ffmpeg. The soundtrack is rendered offline in the same page, then
 // loudness-normalized to -14 LUFS (two-pass EBU R128) and muxed.
 import fs from 'node:fs';
@@ -13,9 +14,9 @@ const seg = path.join(out, 'segments');
 fs.mkdirSync(seg, { recursive: true });
 
 const FPS = 60;
-const FRAMES = 40 * FPS;
-const WORKERS = Number(process.env.WORKERS ?? Math.max(1, Math.min(4, os.cpus().length)));
-const CRF = process.env.CRF ?? '12';
+const FRAMES = Number(process.env.FRAMES ?? 34 * FPS); // FRAMES=120 renders a short test
+const WORKERS = Number(process.env.WORKERS ?? Math.max(1, Math.min(3, os.cpus().length - 1)));
+const CRF = process.env.CRF ?? '14';
 const MAX_BYTES = 95 * 1024 * 1024;
 
 const server = await serve(path.join(root, 'dist'));
@@ -58,7 +59,7 @@ async function worker(k) {
   const page = await openPage(browser, port);
   const file = path.join(seg, `seg${k}.mp4`);
   const enc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'image2pipe', '-framerate', String(FPS),
-    '-c:v', 'png', '-i', '-', '-c:v', 'libx264', '-preset', 'slow', '-crf', CRF, '-tune', 'animation',
+    '-c:v', 'mjpeg', '-i', '-', '-c:v', 'libx264', '-preset', 'slow', '-crf', CRF, '-tune', 'film',
     '-pix_fmt', 'yuv420p', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709',
     '-x264-params', 'keyint=120:min-keyint=120', '-r', String(FPS), file], { stdio: ['pipe', 'inherit', 'inherit'] });
   for (let f = a; f < b; f++) {
