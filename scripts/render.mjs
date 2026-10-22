@@ -18,7 +18,7 @@ const FRAMES = Number(process.env.FRAMES ?? 34 * FPS); // FRAMES=120 renders a s
 // SwiftShader already spreads one page across every core; extra pages only add contention
 const WORKERS = Number(process.env.WORKERS ?? 1);
 const MEZZ_CRF = '8'; // near-lossless intermediate; the final encode is two-pass to a size budget
-const TARGET_MB = Number(process.env.TARGET_MB ?? 88);
+const TARGET_MB = Number(process.env.TARGET_MB ?? 92);
 
 const server = await serve(path.join(root, 'dist'));
 const port = server.address().port;

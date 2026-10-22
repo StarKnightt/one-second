@@ -39,7 +39,7 @@ Scenes are joined by camera moves: out of a window, under the water surface, thr
 - `src/sets/bedroom.ts`: shadow-mapped moonlight through blind slats, a volumetric shaft, dust, and the city outside the window.
 - `src/post.ts`: a custom pipeline. The scene is rendered once to HDR with depth, then depth of field (a 28-tap golden-angle gather), bloom, and a grade (ACES, split-tone, vignette, chromatic aberration, deterministic grain).
 - `src/audio.ts`: the soundtrack, synthesized offline in Web Audio. It has a tap tick, deep filtered-noise whooshes with sub-bass sweeps, a city rumble, a splash and ocean rumble, data-center mains hum and fans, a space drone, a phone buzz with nightstand rattle, and a closing chord.
-- `scripts/render.mjs`: Playwright drives headless Chromium with WebGL on SwiftShader (CPU), so pixels don't depend on a GPU. Each frame is captured as a JPEG at quality 0.96 and piped to ffmpeg as a near-lossless intermediate. A two-pass x264 encode then targets a size budget (under 95 MB). Audio goes through two-pass EBU R128 `loudnorm` plus a measured trim to exactly −14 LUFS.
+- `scripts/render.mjs`: Playwright drives headless Chromium with WebGL on SwiftShader (CPU), so pixels don't depend on a GPU. Each frame is captured as a JPEG at quality 0.96 and piped to ffmpeg as a near-lossless intermediate. A two-pass x264 encode then targets a 92 MB budget, under the 95 MB limit. Audio goes through two-pass EBU R128 `loudnorm` plus a measured trim to exactly −14 LUFS.
 
 ```sh
 pnpm install
